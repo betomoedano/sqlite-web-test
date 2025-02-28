@@ -1,74 +1,235 @@
-import { Image, StyleSheet, Platform } from 'react-native';
+import { useState, useEffect, useCallback } from "react";
+import {
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from "react-native";
+import {
+  SQLiteProvider,
+  useSQLiteContext,
+  type SQLiteDatabase,
+} from "expo-sqlite";
 
-import { HelloWave } from '@/components/HelloWave';
-import ParallaxScrollView from '@/components/ParallaxScrollView';
-import { ThemedText } from '@/components/ThemedText';
-import { ThemedView } from '@/components/ThemedView';
+/**
+ * The Item type represents a single item in database.
+ */
+interface ItemEntity {
+  id: number;
+  done: boolean;
+  value: string;
+}
 
-export default function HomeScreen() {
+//#region Components
+
+export default function Home() {
   return (
-    <ParallaxScrollView
-      headerBackgroundColor={{ light: '#A1CEDC', dark: '#1D3D47' }}
-      headerImage={
-        <Image
-          source={require('@/assets/images/partial-react-logo.png')}
-          style={styles.reactLogo}
-        />
-      }>
-      <ThemedView style={styles.titleContainer}>
-        <ThemedText type="title">Welcome!</ThemedText>
-        <HelloWave />
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 1: Try it</ThemedText>
-        <ThemedText>
-          Edit <ThemedText type="defaultSemiBold">app/(tabs)/index.tsx</ThemedText> to see changes.
-          Press{' '}
-          <ThemedText type="defaultSemiBold">
-            {Platform.select({
-              ios: 'cmd + d',
-              android: 'cmd + m',
-              web: 'F12'
-            })}
-          </ThemedText>{' '}
-          to open developer tools.
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 2: Explore</ThemedText>
-        <ThemedText>
-          Tap the Explore tab to learn more about what's included in this starter app.
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 3: Get a fresh start</ThemedText>
-        <ThemedText>
-          When you're ready, run{' '}
-          <ThemedText type="defaultSemiBold">npm run reset-project</ThemedText> to get a fresh{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> directory. This will move the current{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> to{' '}
-          <ThemedText type="defaultSemiBold">app-example</ThemedText>.
-        </ThemedText>
-      </ThemedView>
-    </ParallaxScrollView>
+    <SQLiteProvider databaseName="db.db" onInit={migrateDbIfNeeded}>
+      <Text>Hello</Text>
+      <Main />
+    </SQLiteProvider>
   );
 }
 
+function Main() {
+  const db = useSQLiteContext();
+  const [text, setText] = useState("");
+  const [todoItems, setTodoItems] = useState<ItemEntity[]>([]);
+  const [doneItems, setDoneItems] = useState<ItemEntity[]>([]);
+
+  const refetchItems = useCallback(() => {
+    async function refetch() {
+      setTodoItems(
+        await db.getAllAsync<ItemEntity>(
+          "SELECT * FROM items WHERE done = ?",
+          false
+        )
+      );
+      setDoneItems(
+        await db.getAllAsync<ItemEntity>(
+          "SELECT * FROM items WHERE done = ?",
+          true
+        )
+      );
+    }
+    refetch();
+  }, [db]);
+
+  useEffect(() => {
+    refetchItems();
+  }, []);
+
+  return (
+    <View style={styles.container}>
+      <Text style={styles.heading}>SQLite Example</Text>
+
+      <View style={styles.flexRow}>
+        <TextInput
+          onChangeText={(text) => setText(text)}
+          onSubmitEditing={async () => {
+            await addItemAsync(db, text);
+            await refetchItems();
+            setText("");
+          }}
+          placeholder="what do you need to do?"
+          style={styles.input}
+          value={text}
+        />
+      </View>
+
+      <ScrollView style={styles.listArea}>
+        <View style={styles.sectionContainer}>
+          <Text style={styles.sectionHeading}>Todo</Text>
+          {todoItems.map((item) => (
+            <Item
+              key={item.id}
+              item={item}
+              onPressItem={async (id) => {
+                await updateItemAsDoneAsync(db, id);
+                await refetchItems();
+              }}
+            />
+          ))}
+        </View>
+        <View style={styles.sectionContainer}>
+          <Text style={styles.sectionHeading}>Completed</Text>
+          {doneItems.map((item) => (
+            <Item
+              key={item.id}
+              item={item}
+              onPressItem={async (id) => {
+                await deleteItemAsync(db, id);
+                await refetchItems();
+              }}
+            />
+          ))}
+        </View>
+      </ScrollView>
+    </View>
+  );
+}
+
+function Item({
+  item,
+  onPressItem,
+}: {
+  item: ItemEntity;
+  onPressItem: (id) => void | Promise<void>;
+}) {
+  const { id, done, value } = item;
+  return (
+    <TouchableOpacity
+      onPress={() => onPressItem && onPressItem(id)}
+      style={[styles.item, done && styles.itemDone]}
+    >
+      <Text style={[styles.itemText, done && styles.itemTextDone]}>
+        {value}
+      </Text>
+    </TouchableOpacity>
+  );
+}
+
+//#endregion
+
+//#region Database Operations
+
+async function addItemAsync(db: SQLiteDatabase, text: string): Promise<void> {
+  if (text !== "") {
+    await db.runAsync(
+      "INSERT INTO items (done, value) VALUES (?, ?);",
+      false,
+      text
+    );
+  }
+}
+
+async function updateItemAsDoneAsync(
+  db: SQLiteDatabase,
+  id: number
+): Promise<void> {
+  await db.runAsync("UPDATE items SET done = ? WHERE id = ?;", true, id);
+}
+
+async function deleteItemAsync(db: SQLiteDatabase, id: number): Promise<void> {
+  await db.runAsync("DELETE FROM items WHERE id = ?;", id);
+}
+
+async function migrateDbIfNeeded(db: SQLiteDatabase) {
+  const DATABASE_VERSION = 1;
+  let { user_version: currentDbVersion } = await db.getFirstAsync<{
+    user_version: number;
+  }>("PRAGMA user_version");
+  if (currentDbVersion >= DATABASE_VERSION) {
+    return;
+  }
+  if (currentDbVersion === 0) {
+    await db.execAsync(`
+PRAGMA journal_mode = 'wal';
+CREATE TABLE IF NOT EXISTS items (id INTEGER PRIMARY KEY NOT NULL, done INT, value TEXT);
+`);
+    currentDbVersion = 1;
+  }
+  // if (currentDbVersion === 1) {
+  //   Add more migrations
+  // }
+  await db.execAsync(`PRAGMA user_version = ${DATABASE_VERSION}`);
+}
+
+//#endregion
+
+//#region Styles
+
 const styles = StyleSheet.create({
-  titleContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
+  container: {
+    backgroundColor: "#fff",
+    flex: 1,
+    paddingTop: 64,
   },
-  stepContainer: {
-    gap: 8,
+  heading: {
+    fontSize: 20,
+    fontWeight: "bold",
+    textAlign: "center",
+  },
+  flexRow: {
+    flexDirection: "row",
+  },
+  input: {
+    borderColor: "#4630eb",
+    borderRadius: 4,
+    borderWidth: 1,
+    flex: 1,
+    height: 48,
+    margin: 16,
+    padding: 8,
+  },
+  listArea: {
+    backgroundColor: "#f0f0f0",
+    flex: 1,
+    paddingTop: 16,
+  },
+  sectionContainer: {
+    marginBottom: 16,
+    marginHorizontal: 16,
+  },
+  sectionHeading: {
+    fontSize: 18,
     marginBottom: 8,
   },
-  reactLogo: {
-    height: 178,
-    width: 290,
-    bottom: 0,
-    left: 0,
-    position: 'absolute',
+  item: {
+    backgroundColor: "#fff",
+    borderColor: "#000",
+    borderWidth: 1,
+    padding: 8,
+  },
+  itemDone: {
+    backgroundColor: "#1c9963",
+  },
+  itemText: {
+    color: "#000",
+  },
+  itemTextDone: {
+    color: "#fff",
   },
 });
